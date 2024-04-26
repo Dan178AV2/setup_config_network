@@ -33,7 +33,7 @@ def rerun_as_admin():
         None,
         1
     )
-@main_requires_admin
+# @main_requires_admin
 def main():
     interface_instance = interface()
     interface_instance.show()
