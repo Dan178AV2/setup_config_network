@@ -4,7 +4,6 @@ import os
 import json
 from tkinter import Tk, Canvas, Button, PhotoImage
 from utils.ip_server import Ip_utils
-from pyuac import main_requires_admin
 
 def is_admin() -> bool:
     """
