@@ -1,12 +1,28 @@
 import ctypes
 import nmap
 import re
+import os
 import subprocess
+import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from scapy.all import ARP, Ether, srp
 from manuf import manuf
 
+# Ruta donde se encuentra instalado nmap
+nmap_path = "C:\\Program Files (x86)\\Nmap"
 
+# Obtén la variable de entorno PATH actual
+path = os.environ['PATH']
+
+# Añade la ruta de nmap al final de la variable PATH
+new_path = path + ";" + nmap_path
+
+# Actualiza la variable de entorno PATH
+os.environ['PATH'] = new_path
+
+# Verifica si nmap está ahora en el PATH
+print(os.environ['PATH'])
 class Ip_utils(object):
     def __init__(self):
         self.interfaces = [
@@ -15,7 +31,8 @@ class Ip_utils(object):
         ]
         self.ip_pc = self.get_ip_address()
         self.interface = self.interface_available()
-        print(f"self.interface: {self.interface}")
+        # self.ip_cameras = self.ip_Camera()
+        # self.ips_pc = self.scan_ip() # Lista de direcciones IP escaneadas
         # self.ip_statics = sorted(
         #     self.scan_ip(), key=lambda ip: tuple(map(int, ip.split('.'))))
 
@@ -55,17 +72,18 @@ class Ip_utils(object):
         """
         ip_addresses = ''
         for interface in self.interfaces:
-            # Ejecuta el comando netsh
-            output = subprocess.check_output(
-                f'netsh interface ipv4 show address name="{interface}"', shell=True).decode(errors='ignore')
-            # Busca la línea que contiene la dirección IP
-            for line in output.split('\n'):
-                if 'Dirección IP' in line:
-                    ip_address = re.search(
-                        r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', line)
-                    if ip_address:
-                        ip_addresses = ip_address.group()
-                        break
+            try:
+                output = subprocess.check_output(
+                    f'netsh interface ipv4 show address name="{interface}"', shell=True).decode(errors='ignore')
+                for line in output.split('\n'):
+                    if 'Direccin IP' in line:
+                        ip_address = re.search(
+                            r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', line)
+                        if ip_address:
+                            ip_addresses = ip_address.group()
+                            break
+            except subprocess.CalledProcessError as e:
+                print(f"Error al ejecutar el comando para la interfaz {interface}: {e}")
         return ip_addresses
 
     def scan_ip(self) -> list[str]:
@@ -86,7 +104,7 @@ class Ip_utils(object):
 
         host_list = nm.all_hosts()
         for host in host_list:
-            if host != '190.168.0.2':
+            if host != '190.168.0.2' and host not in self.ip_cameras and host != self.ip_pc:
                 ip_result.append(f"{host}")
         return ip_result
 
@@ -146,7 +164,7 @@ class Ip_utils(object):
 
         """
         print(f'Configurando IP static a la nic {self.interface}')
-        s = f'netsh interface ipv4 set address name="{self.interface}" source=static address=190.168.0.1 mask=255.255.255.0 gateway=190.168.0.1'
+        s = f'netsh interface ipv4 set address name="{self.interface}" source=static address=190.168.0.1 mask=255.255.255.0 gateway=190.168.0.30'
         self.run(command=s)
 
     def ip_static_client(self):
@@ -184,16 +202,20 @@ class Ip_utils(object):
             El nombre de la interfaz de red para la cual se está verificando si DHCP está habilitado.
 
         """
+
         for interface in self.interfaces:
-            output = subprocess.check_output(
-                f'netsh interface ipv4 show address name="{interface}"', shell=True).decode(errors='ignore')
-            # Busca la línea que contiene la dirección IP
-            for line in output.split('\n'):
-                if 'DHCP habilitado' in line:
-                    if line.split()[-1] == 'No':
-                        print(f"DHCP NO habilitado en la interfaz {interface}")
-                    else:
-                        print(f"DHCP habilitado en la interfaz {interface}")
+            try:
+                output = subprocess.check_output(
+                    f'netsh interface ipv4 show address name="{interface}"', shell=True).decode(errors='ignore')
+                # Busca la línea que contiene la dirección IP
+                for line in output.split('\n'):
+                    if 'DHCP habilitado' in line:
+                        if line.split()[-1] == 'No':
+                            print(f"DHCP NO habilitado en la interfaz {interface}")
+                        else:
+                            print(f"DHCP habilitado en la interfaz {interface}")
+            except subprocess.CalledProcessError as e:
+                print(f"Error al ejecutar el comando para la interfaz {interface}: {e}")
 
     def get_mac_and_vendor(self, ip_address: str) -> tuple[str, str]:
         # Enviar una solicitud ARP a la dirección IP para obtener la dirección MAC
@@ -212,14 +234,55 @@ class Ip_utils(object):
         vendor = p.get_manuf(mac_address)
 
         return mac_address, vendor
+    
+    def ip_Camera(self):
+        """
+        La función `ip_Camera` recupera la dirección IP de la cámara conectada a la red.
+        """
+        # Rango de direcciones IP a probar
+        start_ip = "190.168.0.100"
+        end_ip = "190.168.0.254"
 
+        # Función para convertir una dirección IP en formato decimal a formato de cadena
+        def ip_to_str(ip):
+            return ".".join(map(str, ip))
 
+        # Función para convertir una dirección IP en formato de cadena a formato decimal
+        def str_to_ip(ip_str):
+            return tuple(map(int, ip_str.split(".")))
+
+        # Función para probar la conexión a una dirección IP específica
+        def test_ip(ip):
+            try:
+                # Intenta establecer una conexión al puerto 80
+                socket.create_connection((ip, 80), 2)
+                print(f"La dirección IP {ip} está respondiendo.")
+                return ip
+            except socket.error:
+                print(f"No se pudo establecer una conexión a la dirección IP {ip}.")
+                return None
+
+        # Convierte las direcciones IP de inicio y fin a formato decimal
+        start_ip_dec = str_to_ip(start_ip)
+        end_ip_dec = str_to_ip(end_ip)
+
+        # Crea una lista de direcciones IP para probar
+        ip_list = [ip_to_str(start_ip_dec[:-1] + (ip,)) for ip in range(start_ip_dec[3], end_ip_dec[3] + 1)]
+
+        # Usa ThreadPoolExecutor para ejecutar test_ip en paralelo para cada dirección IP
+        ip_available = []
+        with ThreadPoolExecutor() as executor:
+            for ip in ip_list:
+                result = executor.submit(test_ip, ip)
+                if result.result() is not None:
+                    ip_available.append(result.result())
+                if len(ip_available) == 2:
+                    break
+
+        print("Direcciones IP disponibles:", ip_available)
+        return ip_available
+
+    
 # if __name__ == '__main__':
-#     ip_utils = Ip_utils()
-    # print(ip_utils.interface)
-    # ip_result = ip_utils.ip_statics
-    # ip_utils.has_dhcp_enabled()
-    # print(ip_result)
-    # for ip in ip_result:
-    #     mac, vendor = ip_utils.get_mac_and_vendor(ip)
-    #     print(f"IP: {ip} MAC: {mac} Vendor: {vendor}")
+#     ip = Ip_utils()
+#     print(ip.get_ip_address())
